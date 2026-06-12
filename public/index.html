@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101315" />
+    <title>跨屏输入</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101315;
+        --fg: #f4f7f5;
+        --muted: #94a39b;
+        --ok: #52d273;
+        --warn: #ffca59;
+        --bad: #ff6b6b;
+        --button: #2488ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+      }
+
+      body {
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      input {
+        width: 100vw;
+        height: 100dvh;
+        min-height: 100vh;
+        display: block;
+        border: 0;
+        outline: 0;
+        padding: max(22px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
+          max(22px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+        background: radial-gradient(circle at 20% 0%, rgba(82, 210, 115, 0.12), transparent 34%),
+          var(--bg);
+        color: var(--fg);
+        caret-color: var(--ok);
+        font: 20px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 3.6em;
+        max-height: var(--text-max-height, 60dvh);
+        display: block;
+        border: 0;
+        outline: 0;
+        resize: none;
+        overflow-y: hidden;
+        padding: 16px 14px;
+        border-radius: 12px;
+        background: rgba(244, 247, 245, 0.08);
+        color: var(--fg);
+        caret-color: var(--ok);
+        font: 20px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      input {
+        font-size: 24px;
+      }
+
+      textarea::placeholder,
+      input::placeholder {
+        color: var(--muted);
+      }
+
+      body[data-state="syncing"] textarea,
+      body[data-state="syncing"] input {
+        box-shadow: inset 0 0 0 3px var(--warn);
+      }
+
+      body[data-state="ok"] textarea,
+      body[data-state="ok"] input {
+        box-shadow: inset 0 0 0 3px var(--ok);
+      }
+
+      body[data-state="error"] textarea,
+      body[data-state="error"] input {
+        box-shadow: inset 0 0 0 3px var(--bad);
+      }
+
+      .sendButton {
+        width: 100%;
+        height: 56px;
+        border: 0;
+        border-radius: 12px;
+        background: var(--button);
+        color: #fff;
+        font: 600 18px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        box-shadow: 0 10px 28px rgba(36, 136, 255, 0.35);
+      }
+
+      .sendButton:active {
+        transform: translateY(1px);
+      }
+
+      .inputPanel {
+        width: 100vw;
+        height: 100dvh;
+        min-height: 100vh;
+        padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
+          max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+        background: radial-gradient(circle at 20% 0%, rgba(82, 210, 115, 0.12), transparent 34%),
+          var(--bg);
+      }
+
+      .inputStack {
+        display: flex;
+        max-height: 100%;
+        flex-direction: column;
+        gap: 12px;
+      }
+    </style>
+  </head>
+  <body data-state="idle">
+    <form id="authForm" hidden>
+      <input
+        id="authPassword"
+        autocomplete="current-password"
+        inputmode="text"
+        placeholder="认证密码"
+        type="password"
+      />
+    </form>
+
+    <section class="inputPanel" id="inputPanel" hidden>
+      <div class="inputStack">
+        <textarea
+          id="voiceText"
+          autocomplete="off"
+          autocapitalize="sentences"
+          spellcheck="true"
+          inputmode="text"
+          placeholder="在这里输入或使用语音输入"
+        ></textarea>
+
+        <button class="sendButton" id="sendButton" type="button">发送</button>
+      </div>
+    </section>
+
+    <script>
+      const textarea = document.querySelector("#voiceText");
+      const authForm = document.querySelector("#authForm");
+      const authPassword = document.querySelector("#authPassword");
+      const sendButton = document.querySelector("#sendButton");
+      const inputPanel = document.querySelector("#inputPanel");
+
+      let revision = 0;
+      let timer = 0;
+      let sending = false;
+      let dirtyWhileSending = false;
+      let composing = false;
+
+      function setState(state) {
+        document.body.dataset.state = state;
+      }
+
+      function showInput() {
+        authForm.hidden = true;
+        inputPanel.hidden = false;
+        resizeTextarea();
+        textarea.focus();
+      }
+
+      function showAuth() {
+        inputPanel.hidden = true;
+        authForm.hidden = false;
+        authPassword.focus();
+      }
+
+      function resizeTextarea() {
+        if (inputPanel.hidden) return;
+        const panelStyle = getComputedStyle(inputPanel);
+        const verticalPadding =
+          parseFloat(panelStyle.paddingTop) + parseFloat(panelStyle.paddingBottom);
+        const buttonHeight = sendButton.offsetHeight || 56;
+        const gap = 12;
+        const bottomReserve = 16;
+        const maxHeight = Math.max(
+          72,
+          window.innerHeight - verticalPadding - buttonHeight - gap - bottomReserve,
+        );
+
+        textarea.style.setProperty("--text-max-height", `${maxHeight}px`);
+        textarea.style.height = "auto";
+        const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+        textarea.style.height = `${nextHeight}px`;
+        textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+      }
+
+      async function checkAuth() {
+        try {
+          const response = await fetch("/api/auth/status", { cache: "no-store" });
+          const data = await response.json();
+          if (data.authenticated) {
+            showInput();
+          } else {
+            showAuth();
+          }
+        } catch {
+          showAuth();
+          setState("error");
+        }
+      }
+
+      async function login(password) {
+        setState("syncing");
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+
+        if (!response.ok) {
+          setState("error");
+          authPassword.select();
+          return;
+        }
+
+        authPassword.value = "";
+        setState("ok");
+        showInput();
+        window.setTimeout(() => setState("idle"), 450);
+      }
+
+      async function postText() {
+        return postToEndpoint("/api/sync");
+      }
+
+      async function submitText() {
+        window.clearTimeout(timer);
+        const textAtSubmit = textarea.value;
+        const submitted = await postToEndpoint("/api/submit");
+        if (!submitted || textarea.value !== textAtSubmit) return;
+
+        textarea.value = "";
+        resizeTextarea();
+        textarea.focus();
+      }
+
+      async function postToEndpoint(endpoint) {
+        if (sending) {
+          dirtyWhileSending = true;
+          return;
+        }
+
+        sending = true;
+        dirtyWhileSending = false;
+        setState("syncing");
+
+        try {
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              text: textarea.value,
+              revision: ++revision,
+            }),
+          });
+
+          if (!response.ok) {
+            if (response.status === 401) showAuth();
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          setState("ok");
+          window.setTimeout(() => {
+            if (document.body.dataset.state === "ok") setState("idle");
+          }, 450);
+          return true;
+        } catch {
+          setState("error");
+          return false;
+        } finally {
+          sending = false;
+          if (dirtyWhileSending) schedulePost(80);
+        }
+      }
+
+      function schedulePost(delay = 180) {
+        if (composing) return;
+        window.clearTimeout(timer);
+        timer = window.setTimeout(postText, delay);
+      }
+
+      textarea.addEventListener("compositionstart", () => {
+        composing = true;
+      });
+
+      textarea.addEventListener("compositionend", () => {
+        composing = false;
+        schedulePost(60);
+      });
+
+      textarea.addEventListener("input", () => {
+        resizeTextarea();
+        schedulePost();
+      });
+
+      sendButton.addEventListener("click", () => {
+        submitText();
+      });
+
+      authForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        login(authPassword.value);
+      });
+
+      authPassword.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        login(authPassword.value);
+      });
+
+      window.addEventListener("pageshow", () => {
+        checkAuth();
+      });
+
+      window.addEventListener("resize", () => {
+        resizeTextarea();
+      });
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+      }
+    </script>
+  </body>
+</html>

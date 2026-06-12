@@ -1,0 +1,15 @@
+.DS_Store
+.voicerelay-auth.json
+.voicerelay.log
+.voicerelay.err.log
+.voicerelay-menu.log
+.voicerelay-menu.err.log
+.voicerelay.pid
+.cloudflared-voicerelay.log
+.cloudflared-voicerelay.err.log
+.cloudflared-voicerelay.pid
+.env
+.env.*
+bin/
+dist/
+node_modules/

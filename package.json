@@ -1,0 +1,23 @@
+{
+  "name": "voicerelay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "安卓语音输入到 Mac 当前焦点的轻量同步工具",
+  "license": "MIT",
+  "type": "commonjs",
+  "scripts": {
+    "auth:clear": "node scripts/auth.js clear",
+    "auth:path": "node scripts/auth.js path",
+    "auth:reset": "node scripts/auth.js reset",
+    "build:helper": "bash scripts/build-helper.sh",
+    "build:menu": "bash scripts/build-menu-app.sh",
+    "daemon:install": "bash scripts/install-launch-agents.sh",
+    "daemon:uninstall": "bash scripts/uninstall-launch-agents.sh",
+    "menu:install": "bash scripts/install-menu-app.sh",
+    "menu:open": "bash scripts/open-menu-app.sh",
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

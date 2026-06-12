@@ -1,0 +1,392 @@
+const { execFile, spawn } = require("node:child_process");
+const fs = require("node:fs/promises");
+const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
+const {
+  clearSessionCookie,
+  createSessionCookie,
+  ensureAuthConfig,
+  verifyPassword,
+  verifySession,
+} = require("./auth-store");
+
+const PORT = Number(process.env.PORT || 5454);
+const HOST = process.env.HOST || "127.0.0.1";
+const PUBLIC_URL =
+  process.env.PUBLIC_URL ||
+  (process.env.PUBLIC_HOST ? `https://${process.env.PUBLIC_HOST}/` : `http://${HOST}:${PORT}/`);
+const SYNC_DEBOUNCE_MS = Number(process.env.SYNC_DEBOUNCE_MS || 180);
+const publicDir = path.join(__dirname, "..", "public");
+const macInputWriterPath = process.env.MAC_INPUT_WRITER_PATH || path.join(__dirname, "..", "bin", "mac-input-writer");
+
+let latestText = "";
+let latestRevision = 0;
+let writerProcess = null;
+let writerStdoutBuffer = "";
+let writerPending = [];
+
+const mimeTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+};
+
+function sendJson(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+function shouldUseSecureCookie(req) {
+  const host = req.headers.host || "";
+  return !host.startsWith("127.0.0.1") && !host.startsWith("localhost");
+}
+
+function readBody(req, limit = 512 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error("请求体过大"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function execFilePromise(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+function pipeToCommand(command, args, text) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} 退出码 ${code}: ${stderr}`));
+    });
+    child.stdin.end(text);
+  });
+}
+
+async function setFocusedFieldValue(text) {
+  await execFilePromise("osascript", [
+    "-e",
+    "on run argv",
+    "-e",
+    "set newText to item 1 of argv",
+    "-e",
+    'tell application "System Events"',
+    "-e",
+    "set frontProcess to first application process whose frontmost is true",
+    "-e",
+    'set focusedElement to value of attribute "AXFocusedUIElement" of frontProcess',
+    "-e",
+    'set roleName to value of attribute "AXRole" of focusedElement',
+    "-e",
+    'if roleName is "AXTextField" or roleName is "AXTextArea" or roleName is "AXComboBox" then',
+    "-e",
+    "set value of focusedElement to newText",
+    "-e",
+    "else",
+    "-e",
+    'error "当前焦点不是可编辑文本框: " & roleName',
+    "-e",
+    "end if",
+    "-e",
+    "end tell",
+    "-e",
+    "end run",
+    text,
+  ]);
+}
+
+async function writeWithMacInputWriter(text) {
+  await fs.access(macInputWriterPath);
+  const writer = ensureMacInputWriter();
+  const payload = Buffer.from(text, "utf8").toString("base64");
+  return sendWriterCommand(writer, payload);
+}
+
+async function pasteWithMacInputWriter(text) {
+  await fs.access(macInputWriterPath);
+  const writer = ensureMacInputWriter();
+  const payload = Buffer.from(text, "utf8").toString("base64");
+  return sendWriterCommand(writer, `PASTE ${payload}`);
+}
+
+async function submitWithMacInputWriter() {
+  await fs.access(macInputWriterPath);
+  const writer = ensureMacInputWriter();
+  return sendWriterCommand(writer, "SUBMIT");
+}
+
+function sendWriterCommand(writer, command) {
+  return new Promise((resolve, reject) => {
+    writerPending.push({ resolve, reject });
+    writer.stdin.write(`${command}\n`, "utf8", (error) => {
+      if (!error) return;
+      const pending = writerPending.pop();
+      pending?.reject(error);
+    });
+  });
+}
+
+async function writeIntoFocusedField(text) {
+  await writeWithMacInputWriter(text);
+}
+
+async function submitFocusedField() {
+  await submitWithMacInputWriter();
+}
+
+async function replaceFocusedFieldForSubmit(text) {
+  if (text.includes("\n")) {
+    await pasteWithMacInputWriter(text);
+    return;
+  }
+  await writeWithMacInputWriter(text);
+}
+
+function ensureMacInputWriter() {
+  if (writerProcess && !writerProcess.killed) return writerProcess;
+
+  writerStdoutBuffer = "";
+  writerPending = [];
+  writerProcess = spawn(macInputWriterPath, ["--daemon"], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  writerProcess.stdout.on("data", (chunk) => {
+    writerStdoutBuffer += chunk.toString("utf8");
+    const lines = writerStdoutBuffer.split(/\r?\n/);
+    writerStdoutBuffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line) continue;
+      const pending = writerPending.shift();
+      if (!pending) continue;
+
+      if (line === "OK") {
+        pending.resolve();
+      } else {
+        pending.reject(new Error(line));
+      }
+    }
+  });
+
+  writerProcess.stderr.on("data", (chunk) => {
+    console.error("mac-input-writer:", chunk.toString("utf8").trim());
+  });
+
+  writerProcess.on("exit", (code, signal) => {
+    const error = new Error(`mac-input-writer 已退出 code=${code} signal=${signal}`);
+    for (const pending of writerPending.splice(0)) {
+      pending.reject(error);
+    }
+    writerProcess = null;
+  });
+
+  writerProcess.on("error", (error) => {
+    for (const pending of writerPending.splice(0)) {
+      pending.reject(error);
+    }
+    writerProcess = null;
+  });
+
+  return writerProcess;
+}
+
+async function serveStatic(req, res, url) {
+  const safePath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  const filePath = path.normalize(path.join(publicDir, safePath));
+
+  if (!filePath.startsWith(publicDir)) {
+    res.writeHead(403).end("Forbidden");
+    return;
+  }
+
+  try {
+    const data = await fs.readFile(filePath);
+    const ext = path.extname(filePath);
+    res.writeHead(200, {
+      "content-type": mimeTypes[ext] || "application/octet-stream",
+      "cache-control": ext === ".html" ? "no-store" : "public, max-age=3600",
+    });
+    res.end(data);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      res.writeHead(404).end("Not found");
+      return;
+    }
+    console.error(error);
+    res.writeHead(500).end("Server error");
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+
+  if (req.method === "GET" && url.pathname === "/api/auth/status") {
+    sendJson(res, 200, { ok: true, authenticated: await verifySession(req) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    try {
+      const raw = await readBody(req, 16 * 1024);
+      const payload = JSON.parse(raw || "{}");
+      const password = typeof payload.password === "string" ? payload.password : "";
+
+      if (!(await verifyPassword(password))) {
+        sendJson(res, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+
+      const { config } = await ensureAuthConfig();
+      const body = JSON.stringify({ ok: true });
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+        "cache-control": "no-store",
+        "set-cookie": createSessionCookie(config, { secure: shouldUseSecureCookie(req) }),
+      });
+      res.end(body);
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    const body = JSON.stringify({ ok: true });
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(body),
+      "cache-control": "no-store",
+      "set-cookie": clearSessionCookie({ secure: shouldUseSecureCookie(req) }),
+    });
+    res.end(body);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/status") {
+    sendJson(res, 200, {
+      ok: true,
+      host: PUBLIC_HOST,
+      authenticated: await verifySession(req),
+      latestRevision,
+      latestLength: latestText.length,
+      platform: os.platform(),
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/sync") {
+    if (!(await verifySession(req))) {
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    try {
+      const raw = await readBody(req);
+      const payload = JSON.parse(raw || "{}");
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const revision = Number.isFinite(payload.revision) ? payload.revision : Date.now();
+
+      latestText = text;
+      latestRevision = revision;
+      await writeIntoFocusedField(text);
+      console.log(`已同步 revision=${revision} chars=${text.length}`);
+      sendJson(res, 200, { ok: true, revision, length: text.length });
+    } catch (error) {
+      console.error("同步到当前焦点失败:", error.stderr || error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/submit") {
+    if (!(await verifySession(req))) {
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    try {
+      const raw = await readBody(req);
+      const payload = JSON.parse(raw || "{}");
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const revision = Number.isFinite(payload.revision) ? payload.revision : Date.now();
+
+      latestText = text;
+      latestRevision = revision;
+      await replaceFocusedFieldForSubmit(text);
+      await submitFocusedField();
+      console.log(`已发送 revision=${revision} chars=${text.length}`);
+      sendJson(res, 200, { ok: true, revision, length: text.length, submitted: true });
+    } catch (error) {
+      console.error("提交当前焦点失败:", error.stderr || error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "GET" || req.method === "HEAD") {
+    await serveStatic(req, res, url);
+    return;
+  }
+
+  res.writeHead(405, { allow: "GET, HEAD, POST" }).end("Method not allowed");
+});
+
+ensureAuthConfig()
+  .then(({ createdPassword }) => {
+    server.listen(PORT, HOST, () => {
+      console.log("VoiceRelay 已启动");
+      console.log(`本地地址: http://${HOST}:${PORT}/`);
+      console.log(`访问地址: ${PUBLIC_URL}`);
+      if (createdPassword) {
+        console.log(`首次认证密码: ${createdPassword}`);
+      } else {
+        console.log("认证密码已存在；需要重置请运行 npm run auth:reset");
+      }
+      console.log("清除手机端登录状态: npm run auth:clear");
+      console.log("使用前请把 Mac 输入焦点放到目标文本框，并给运行终端授予“辅助功能”权限。");
+    });
+  })
+  .catch((error) => {
+    console.error("启动失败:", error.message);
+    process.exitCode = 1;
+  });
