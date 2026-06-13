@@ -23,6 +23,7 @@ const dataPath = process.env.VOICE_RELAY_DATA_PATH || path.join(__dirname, "..",
 const macInputWriterPath = process.env.MAC_INPUT_WRITER_PATH || path.join(__dirname, "..", "bin", "mac-input-writer");
 const defaultTypingCharsPerMinute = Number(process.env.TYPING_CHARS_PER_MINUTE || 60);
 const maxHistoryItems = Number(process.env.MAX_HISTORY_ITEMS || 50);
+const DATA_FLUSH_DELAY_MS = Number(process.env.DATA_FLUSH_DELAY_MS || 500);
 
 let latestText = "";
 let latestRevision = 0;
@@ -30,6 +31,9 @@ let writerProcess = null;
 let writerStdoutBuffer = "";
 let writerPending = [];
 let dataMutationQueue = Promise.resolve();
+let dataSaveQueue = Promise.resolve();
+let dataFlushTimer = null;
+let relayDataCache = null;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -100,7 +104,21 @@ function normalizeRelayData(data) {
   };
 }
 
+function cloneRelayData(data) {
+  return normalizeRelayData(JSON.parse(JSON.stringify(data)));
+}
+
+async function loadRelayData() {
+  relayDataCache = await readRelayDataFile();
+  return relayDataCache;
+}
+
 async function readRelayData() {
+  if (!relayDataCache) await loadRelayData();
+  return cloneRelayData(relayDataCache);
+}
+
+async function readRelayDataFile() {
   try {
     const raw = await fs.readFile(dataPath, "utf8");
     return normalizeRelayData(JSON.parse(raw));
@@ -165,11 +183,35 @@ async function writeRelayDataFile(data) {
   return normalized;
 }
 
+async function flushRelayData() {
+  if (dataFlushTimer) {
+    clearTimeout(dataFlushTimer);
+    dataFlushTimer = null;
+  }
+  if (!relayDataCache) return emptyRelayData();
+
+  const snapshot = cloneRelayData(relayDataCache);
+  dataSaveQueue = dataSaveQueue.then(() => writeRelayDataFile(snapshot));
+  return dataSaveQueue;
+}
+
+function scheduleRelayDataFlush() {
+  if (dataFlushTimer) clearTimeout(dataFlushTimer);
+  dataFlushTimer = setTimeout(() => {
+    flushRelayData().catch((error) => {
+      console.error("统计数据刷盘失败:", error.message);
+    });
+  }, DATA_FLUSH_DELAY_MS);
+  dataFlushTimer.unref?.();
+}
+
 async function mutateRelayData(mutator) {
   const task = dataMutationQueue.then(async () => {
-    const data = await readRelayData();
-    const nextData = await mutator(data);
-    return writeRelayDataFile(nextData || data);
+    if (!relayDataCache) await loadRelayData();
+    const nextData = await mutator(relayDataCache);
+    relayDataCache = normalizeRelayData(nextData || relayDataCache);
+    scheduleRelayDataFlush();
+    return cloneRelayData(relayDataCache);
   });
 
   dataMutationQueue = task.catch(() => {});
@@ -237,9 +279,21 @@ async function resetStats() {
   });
 }
 
+async function updateTypingSpeed(typingCharsPerMinute) {
+  return mutateRelayData((data) => {
+    data.typingCharsPerMinute = typingCharsPerMinute;
+    return data;
+  });
+}
+
 function shouldUseSecureCookie(req) {
   const host = req.headers.host || "";
   return !host.startsWith("127.0.0.1") && !host.startsWith("localhost");
+}
+
+function isLocalHostRequest(req) {
+  const host = (req.headers.host || "").toLowerCase();
+  return host.startsWith("127.0.0.1:") || host.startsWith("localhost:") || host === "127.0.0.1" || host === "localhost";
 }
 
 function readBody(req, limit = 512 * 1024) {
@@ -531,6 +585,64 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/local/typing-speed") {
+    if (!isLocalHostRequest(req)) {
+      sendJson(res, 403, { ok: false, error: "forbidden" });
+      return;
+    }
+
+    try {
+      const raw = await readBody(req);
+      const payload = JSON.parse(raw || "{}");
+      const typingCharsPerMinute = Number(payload.typingCharsPerMinute);
+      if (!Number.isFinite(typingCharsPerMinute) || typingCharsPerMinute <= 0) {
+        sendJson(res, 400, { ok: false, error: "invalid typingCharsPerMinute" });
+        return;
+      }
+      const relayData = await updateTypingSpeed(typingCharsPerMinute);
+      await flushRelayData();
+      sendJson(res, 200, { ok: true, ...relayData });
+    } catch (error) {
+      console.error("设置打字速度失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/local/history/clear") {
+    if (!isLocalHostRequest(req)) {
+      sendJson(res, 403, { ok: false, error: "forbidden" });
+      return;
+    }
+
+    try {
+      const relayData = await clearHistory();
+      await flushRelayData();
+      sendJson(res, 200, { ok: true, ...relayData });
+    } catch (error) {
+      console.error("清空发送历史失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/local/stats/reset") {
+    if (!isLocalHostRequest(req)) {
+      sendJson(res, 403, { ok: false, error: "forbidden" });
+      return;
+    }
+
+    try {
+      const relayData = await resetStats();
+      await flushRelayData();
+      sendJson(res, 200, { ok: true, ...relayData });
+    } catch (error) {
+      console.error("重置统计失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/draft") {
     if (!(await verifySession(req))) {
       sendJson(res, 401, { ok: false, error: "unauthorized" });
@@ -647,8 +759,27 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(405, { allow: "GET, HEAD, POST" }).end("Method not allowed");
 });
 
-ensureAuthConfig()
-  .then(({ createdPassword }) => {
+async function shutdown(signal) {
+  try {
+    await dataMutationQueue;
+    await flushRelayData();
+  } catch (error) {
+    console.error("退出前保存统计数据失败:", error.message);
+  } finally {
+    process.exit(signal === "SIGINT" ? 130 : 0);
+  }
+}
+
+process.once("SIGTERM", () => {
+  shutdown("SIGTERM");
+});
+
+process.once("SIGINT", () => {
+  shutdown("SIGINT");
+});
+
+Promise.all([ensureAuthConfig(), loadRelayData()])
+  .then(([{ createdPassword }]) => {
     server.listen(PORT, HOST, () => {
       console.log("VoiceRelay 已启动");
       console.log(`本地地址: http://${HOST}:${PORT}/`);

@@ -501,18 +501,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func writeTypingSpeed(_ value: Double) throws {
+    if isRunning(serviceProcess) {
+      try postLocalAPI(path: "/api/local/typing-speed", body: ["typingCharsPerMinute": value])
+      return
+    }
+
     try updateRelayData { object in
       object["typingCharsPerMinute"] = value
     }
   }
 
   private func writeHistory(_ history: [String]) throws {
+    if isRunning(serviceProcess), history.isEmpty {
+      try postLocalAPI(path: "/api/local/history/clear")
+      return
+    }
+
     try updateRelayData { object in
       object["history"] = history
     }
   }
 
   private func writeStatsReset() throws {
+    if isRunning(serviceProcess) {
+      try postLocalAPI(path: "/api/local/stats/reset")
+      return
+    }
+
     try updateRelayData { object in
       object["stats"] = [
         "sendCount": 0,
@@ -542,6 +557,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     object["updatedAt"] = Date().timeIntervalSince1970 * 1000
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: url, options: [.atomic])
+  }
+
+  private func postLocalAPI(path: String, body: [String: Any] = [:]) throws {
+    guard let url = URL(string: "http://127.0.0.1:5454\(path)") else {
+      throw NSError(domain: "VoiceRelayMenu", code: 2, userInfo: [NSLocalizedDescriptionKey: "本地接口地址无效"])
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "content-type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+    let semaphore = DispatchSemaphore(value: 0)
+    var result: Result<Void, Error> = .success(())
+    URLSession.shared.dataTask(with: request) { data, response, error in
+      defer { semaphore.signal() }
+      if let error {
+        result = .failure(error)
+        return
+      }
+
+      guard let httpResponse = response as? HTTPURLResponse else {
+        result = .failure(NSError(domain: "VoiceRelayMenu", code: 3, userInfo: [NSLocalizedDescriptionKey: "本地接口没有响应"]))
+        return
+      }
+
+      guard (200..<300).contains(httpResponse.statusCode) else {
+        let message = data.flatMap { String(data: $0, encoding: .utf8) } ?? "HTTP \(httpResponse.statusCode)"
+        result = .failure(NSError(domain: "VoiceRelayMenu", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message]))
+        return
+      }
+    }.resume()
+
+    semaphore.wait()
+    try result.get()
   }
 
   private func formatCount(_ value: Double) -> String {
