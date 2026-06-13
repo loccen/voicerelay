@@ -297,6 +297,7 @@
       const statsKey = "voiceRelaySendStats";
       const maxHistoryItems = 12;
       const defaultTypingCharsPerMinute = 60;
+      const inputIdleStopMs = 2000;
 
       let revision = 0;
       let timer = 0;
@@ -305,8 +306,8 @@
       let composing = false;
       let inputMode = localStorage.getItem("voiceRelayInputMode") === "send" ? "send" : "realtime";
       let draftTimer = 0;
-      let inputStartedAt = 0;
-      let inputEndedAt = 0;
+      let accumulatedInputMs = 0;
+      let lastInputAt = 0;
       let typingCharsPerMinute = defaultTypingCharsPerMinute;
 
       function setState(state) {
@@ -618,8 +619,8 @@
       }
 
       function currentInputDurationMs() {
-        if (!inputStartedAt || !inputEndedAt) return 0;
-        return Math.max(0, inputEndedAt - inputStartedAt);
+        if (!lastInputAt) return accumulatedInputMs;
+        return accumulatedInputMs + Math.min(Date.now() - lastInputAt, inputIdleStopMs);
       }
 
       function currentInputMetrics() {
@@ -635,8 +636,8 @@
       }
 
       function resetInputTiming() {
-        inputStartedAt = 0;
-        inputEndedAt = 0;
+        accumulatedInputMs = 0;
+        lastInputAt = 0;
       }
 
       function updateInputTiming() {
@@ -645,8 +646,10 @@
           resetInputTiming();
           return;
         }
-        if (!inputStartedAt) inputStartedAt = now;
-        inputEndedAt = now;
+        if (lastInputAt) {
+          accumulatedInputMs += Math.min(now - lastInputAt, inputIdleStopMs);
+        }
+        lastInputAt = now;
       }
 
       textarea.addEventListener("compositionstart", () => {

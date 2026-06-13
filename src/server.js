@@ -484,10 +484,10 @@ const server = http.createServer(async (req, res) => {
 
       latestText = text;
       latestRevision = revision;
-      await updateCurrentInput(text, inputDurationMs);
+      const relayData = await updateCurrentInput(text, inputDurationMs);
       await writeIntoFocusedField(text);
       console.log(`已同步 revision=${revision} chars=${text.length}`);
-      sendJson(res, 200, { ok: true, revision, length: text.length });
+      sendJson(res, 200, { ok: true, revision, length: text.length, ...relayData });
     } catch (error) {
       console.error("同步到当前焦点失败:", error.stderr || error.message);
       sendJson(res, 500, { ok: false, error: error.message });
