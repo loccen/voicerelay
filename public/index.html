@@ -138,64 +138,92 @@
         color: var(--fg);
       }
 
-      .historyPanel {
-        max-height: min(168px, 24dvh);
-        overflow-y: auto;
-        border-radius: 12px;
-        background: var(--surface);
+      .statsPanel {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        gap: 10px;
+        min-width: 0;
+        overflow-x: auto;
+        padding: 2px 0 6px;
+        scrollbar-width: none;
       }
 
-      .statsPanel {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1px;
-        overflow: hidden;
-        border-radius: 12px;
-        background: var(--surface);
+      .statsPanel::-webkit-scrollbar {
+        display: none;
       }
 
       .statItem {
-        min-width: 0;
-        padding: 10px 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: max-content;
+        color: var(--fg);
       }
 
-      .statLabel {
+      .statIcon {
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        background: rgba(244, 247, 245, 0.1);
         color: var(--muted);
-        font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 700 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .statText {
+        min-width: 0;
+        display: grid;
+        gap: 2px;
       }
 
       .statValue {
-        margin-top: 6px;
         color: var(--fg);
-        font: 700 17px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 700 14px/1.1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
       }
 
-      .historyTitle {
+      .statLabel {
+        margin-top: 2px;
+        color: var(--muted);
+        font: 600 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        white-space: nowrap;
+      }
+
+      .secondaryRow {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 10px 12px 4px;
-        color: var(--muted);
-        font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        gap: 8px;
+      }
+
+      .historyPanel {
+        max-height: min(132px, 22dvh);
+        overflow-y: auto;
+        border-radius: 10px;
+        background: var(--surface);
       }
 
       .smallActionButton {
+        min-width: 0;
         border: 0;
-        padding: 10px 12px;
-        border-radius: 10px;
+        padding: 9px 10px;
+        border-radius: 8px;
         background: var(--surface);
         color: var(--muted);
-        font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        white-space: nowrap;
       }
 
-      .actionRow {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
+      .smallActionButton:disabled {
+        opacity: 0.48;
+      }
+
+      .historyToggleButton {
+        flex: 1 1 auto;
+        color: var(--fg);
+        text-align: left;
       }
 
       .historyList {
@@ -253,6 +281,44 @@
 
     <section class="inputPanel" id="inputPanel" hidden>
       <div class="inputStack">
+        <section class="statsPanel" id="statsPanel">
+          <div class="statItem">
+            <span class="statIcon">字</span>
+            <span class="statText">
+              <span class="statValue" id="currentChars">0</span>
+              <span class="statLabel">本次</span>
+            </span>
+          </div>
+          <div class="statItem">
+            <span class="statIcon">时</span>
+            <span class="statText">
+              <span class="statValue" id="currentInputTime">0 秒</span>
+              <span class="statLabel">本次</span>
+            </span>
+          </div>
+          <div class="statItem">
+            <span class="statIcon">总</span>
+            <span class="statText">
+              <span class="statValue" id="sentChars">0</span>
+              <span class="statLabel">累计字数</span>
+            </span>
+          </div>
+          <div class="statItem">
+            <span class="statIcon">耗</span>
+            <span class="statText">
+              <span class="statValue" id="totalInputTime">0 秒</span>
+              <span class="statLabel">累计耗时</span>
+            </span>
+          </div>
+          <div class="statItem">
+            <span class="statIcon">省</span>
+            <span class="statText">
+              <span class="statValue" id="savedTime">0 秒</span>
+              <span class="statLabel" id="savedTimeLabel">节省</span>
+            </span>
+          </div>
+        </section>
+
         <div class="modeControl" role="group" aria-label="输入模式">
           <button class="modeButton" id="realtimeModeButton" type="button" aria-pressed="true">实时同步</button>
           <button class="modeButton" id="sendModeButton" type="button" aria-pressed="false">发送模式</button>
@@ -269,38 +335,13 @@
 
         <button class="sendButton" id="sendButton" type="button">发送</button>
 
-        <section class="statsPanel" id="statsPanel">
-          <div class="statItem">
-            <div class="statLabel">本次字数</div>
-            <div class="statValue" id="currentChars">0</div>
-          </div>
-          <div class="statItem">
-            <div class="statLabel">本次耗时</div>
-            <div class="statValue" id="currentInputTime">0 秒</div>
-          </div>
-          <div class="statItem">
-            <div class="statLabel">累计字数</div>
-            <div class="statValue" id="sentChars">0</div>
-          </div>
-          <div class="statItem">
-            <div class="statLabel">累计耗时</div>
-            <div class="statValue" id="totalInputTime">0 秒</div>
-          </div>
-          <div class="statItem">
-            <div class="statLabel" id="savedTimeLabel">累计节省</div>
-            <div class="statValue" id="savedTime">0 秒</div>
-          </div>
-        </section>
-
-        <div class="actionRow">
-          <button class="smallActionButton" id="resetStatsButton" type="button">重置统计</button>
-          <button class="smallActionButton" id="clearHistoryButton" type="button">清空历史</button>
+        <div class="secondaryRow">
+          <button class="smallActionButton historyToggleButton" id="historyToggleButton" type="button">历史 0</button>
+          <button class="smallActionButton" id="resetStatsButton" type="button">重置</button>
+          <button class="smallActionButton" id="clearHistoryButton" type="button">清空</button>
         </div>
 
         <section class="historyPanel" id="historyPanel" aria-label="发送历史" hidden>
-          <div class="historyTitle">
-            <span>发送历史</span>
-          </div>
           <div class="historyList" id="historyList"></div>
         </section>
       </div>
@@ -317,13 +358,14 @@
       const historyPanel = document.querySelector("#historyPanel");
       const historyList = document.querySelector("#historyList");
       const statsPanel = document.querySelector("#statsPanel");
-      const actionRow = document.querySelector(".actionRow");
+      const secondaryRow = document.querySelector(".secondaryRow");
       const currentChars = document.querySelector("#currentChars");
       const currentInputTime = document.querySelector("#currentInputTime");
       const sentChars = document.querySelector("#sentChars");
       const totalInputTime = document.querySelector("#totalInputTime");
       const savedTimeLabel = document.querySelector("#savedTimeLabel");
       const savedTime = document.querySelector("#savedTime");
+      const historyToggleButton = document.querySelector("#historyToggleButton");
       const clearHistoryButton = document.querySelector("#clearHistoryButton");
       const resetStatsButton = document.querySelector("#resetStatsButton");
 
@@ -343,6 +385,7 @@
       let accumulatedInputMs = 0;
       let lastInputAt = 0;
       let typingCharsPerMinute = defaultTypingCharsPerMinute;
+      let historyExpanded = false;
 
       function setState(state) {
         document.body.dataset.state = state;
@@ -370,10 +413,10 @@
           parseFloat(panelStyle.paddingTop) + parseFloat(panelStyle.paddingBottom);
         const buttonHeight = sendButton.offsetHeight || 56;
         const modeHeight = realtimeModeButton.parentElement.offsetHeight || 44;
-        const statsHeight = statsPanel.offsetHeight || 58;
-        const actionHeight = actionRow.offsetHeight || 38;
+        const statsHeight = statsPanel.offsetHeight || 30;
+        const secondaryHeight = secondaryRow.offsetHeight || 34;
         const historyHeight = historyPanel.hidden ? 0 : historyPanel.offsetHeight;
-        const gap = historyPanel.hidden ? 48 : 60;
+        const gap = historyPanel.hidden ? 48 : 58;
         const bottomReserve = 16;
         const maxHeight = Math.max(
           72,
@@ -382,7 +425,7 @@
             buttonHeight -
             modeHeight -
             statsHeight -
-            actionHeight -
+            secondaryHeight -
             historyHeight -
             gap -
             bottomReserve,
@@ -585,7 +628,9 @@
 
       function renderHistory() {
         const history = loadHistory();
-        historyPanel.hidden = history.length === 0;
+        historyToggleButton.textContent = historyExpanded ? `收起历史 ${history.length}` : `历史 ${history.length}`;
+        historyToggleButton.disabled = history.length === 0;
+        historyPanel.hidden = history.length === 0 || !historyExpanded;
         historyList.replaceChildren();
 
         for (const text of history) {
@@ -599,6 +644,7 @@
             resizeTextarea();
             renderStats();
             textarea.focus();
+            historyExpanded = false;
             schedulePost(0);
             scheduleDraft(0);
           });
@@ -651,7 +697,7 @@
         currentInputTime.textContent = formatDuration(current.actualInputMs);
         sentChars.textContent = stats.sentChars.toLocaleString("zh-CN");
         totalInputTime.textContent = formatDuration(stats.actualInputMs);
-        savedTimeLabel.textContent = `累计节省(${typingCharsPerMinute}字/分)`;
+        savedTimeLabel.textContent = "节省";
         savedTime.textContent = formatDuration(stats.savedMs);
         resizeTextarea();
       }
@@ -690,6 +736,7 @@
       }
 
       async function clearHistory() {
+        historyExpanded = false;
         saveHistory([]);
         renderHistory();
         try {
@@ -753,6 +800,14 @@
 
       resetStatsButton.addEventListener("click", () => {
         resetStats();
+      });
+
+      historyToggleButton.addEventListener("click", () => {
+        const history = loadHistory();
+        if (history.length === 0) return;
+        historyExpanded = !historyExpanded;
+        renderHistory();
+        textarea.focus();
       });
 
       authForm.addEventListener("submit", (event) => {

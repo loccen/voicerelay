@@ -131,41 +131,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     menu.addItem(.separator())
 
-    let openPageItem = NSMenuItem(title: "打开手机端页面", action: #selector(openPage), keyEquivalent: "")
-    openPageItem.target = self
-    menu.addItem(openPageItem)
+    let phoneMenu = NSMenu(title: "手机与认证")
+    phoneMenu.addItem(makeActionItem(title: "打开手机端页面", action: #selector(openPage)))
+    phoneMenu.addItem(makeActionItem(title: "复制认证密码", action: #selector(copyPassword)))
+    phoneMenu.addItem(makeActionItem(title: "重置认证密码", action: #selector(resetPassword)))
+    phoneMenu.addItem(makeActionItem(title: "清除手机登录态", action: #selector(clearSessions)))
+    menu.addItem(makeSubmenuItem(title: "手机与认证", submenu: phoneMenu))
 
-    let copyPasswordItem = NSMenuItem(title: "复制认证密码", action: #selector(copyPassword), keyEquivalent: "")
-    copyPasswordItem.target = self
-    menu.addItem(copyPasswordItem)
+    let statsMenu = NSMenu(title: "统计与历史")
+    statsMenu.addItem(makeActionItem(title: "打开打字速度测试", action: #selector(openTypingTest)))
+    statsMenu.addItem(makeActionItem(title: "设置打字速度", action: #selector(setTypingSpeed)))
+    statsMenu.addItem(.separator())
+    statsMenu.addItem(makeActionItem(title: "清空发送历史", action: #selector(clearHistory)))
+    statsMenu.addItem(makeActionItem(title: "重置统计", action: #selector(resetStats)))
+    menu.addItem(makeSubmenuItem(title: "统计与历史", submenu: statsMenu))
 
-    let resetPasswordItem = NSMenuItem(title: "重置认证密码", action: #selector(resetPassword), keyEquivalent: "")
-    resetPasswordItem.target = self
-    menu.addItem(resetPasswordItem)
-
-    let clearSessionsItem = NSMenuItem(title: "清除手机登录态", action: #selector(clearSessions), keyEquivalent: "")
-    clearSessionsItem.target = self
-    menu.addItem(clearSessionsItem)
-
-    let typingTestItem = NSMenuItem(title: "打开打字速度测试", action: #selector(openTypingTest), keyEquivalent: "")
-    typingTestItem.target = self
-    menu.addItem(typingTestItem)
-
-    let typingSpeedSettingItem = NSMenuItem(title: "设置打字速度", action: #selector(setTypingSpeed), keyEquivalent: "")
-    typingSpeedSettingItem.target = self
-    menu.addItem(typingSpeedSettingItem)
-
-    let clearHistoryItem = NSMenuItem(title: "清空发送历史", action: #selector(clearHistory), keyEquivalent: "")
-    clearHistoryItem.target = self
-    menu.addItem(clearHistoryItem)
-
-    let resetStatsItem = NSMenuItem(title: "重置统计", action: #selector(resetStats), keyEquivalent: "")
-    resetStatsItem.target = self
-    menu.addItem(resetStatsItem)
-
-    let accessibilityItem = NSMenuItem(title: "打开辅助功能权限设置", action: #selector(openAccessibilitySettings), keyEquivalent: "")
-    accessibilityItem.target = self
-    menu.addItem(accessibilityItem)
+    let maintenanceMenu = NSMenu(title: "系统与维护")
+    maintenanceMenu.addItem(makeActionItem(title: "打开辅助功能权限设置", action: #selector(openAccessibilitySettings)))
+    maintenanceMenu.addItem(makeActionItem(title: "打开日志目录", action: #selector(openLogs)))
+    maintenanceMenu.addItem(makeActionItem(title: "清理残留服务进程", action: #selector(cleanupOrphans)))
+    menu.addItem(makeSubmenuItem(title: "系统与维护", submenu: maintenanceMenu))
 
     menu.addItem(.separator())
 
@@ -180,17 +165,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     menu.addItem(.separator())
 
-    let logItem = NSMenuItem(title: "打开日志目录", action: #selector(openLogs), keyEquivalent: "")
-    logItem.target = self
-    menu.addItem(logItem)
-
-    let cleanupItem = NSMenuItem(title: "清理残留服务进程", action: #selector(cleanupOrphans), keyEquivalent: "")
-    cleanupItem.target = self
-    menu.addItem(cleanupItem)
-
     let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
     quitItem.target = self
     menu.addItem(quitItem)
+  }
+
+  private func makeActionItem(title: String, action: Selector) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    item.target = self
+    return item
+  }
+
+  private func makeSubmenuItem(title: String, submenu: NSMenu) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+    item.submenu = submenu
+    return item
   }
 
   private func loadAutoStarts() {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "voicerelay-v11";
+const CACHE_NAME = "voicerelay-v12";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {
