@@ -60,6 +60,7 @@ func isDaemonMode() -> Bool {
 enum DaemonCommand {
   case sync(String)
   case paste(String)
+  case insertPaste(String)
   case submit
 }
 
@@ -72,6 +73,12 @@ func decodeDaemonCommand(_ line: String) -> DaemonCommand? {
      let data = Data(base64Encoded: payload),
      let text = String(data: data, encoding: .utf8) {
     return .paste(text)
+  }
+
+  if let payload = line.stripPrefix("INSERT_PASTE "),
+     let data = Data(base64Encoded: payload),
+     let text = String(data: data, encoding: .utf8) {
+    return .insertPaste(text)
   }
 
   if let data = Data(base64Encoded: line), let text = String(data: data, encoding: .utf8) {
@@ -367,6 +374,18 @@ func replaceAllWithAccessibilitySelectionAndClipboard(_ element: AXUIElement, te
   }
 }
 
+func pasteTextAtCursor(_ text: String) throws {
+  let previousClipboard = replaceClipboard(with: text)
+  do {
+    try paste()
+    Thread.sleep(forTimeInterval: 0.12)
+    restoreClipboard(previousClipboard)
+  } catch {
+    restoreClipboard(previousClipboard)
+    throw error
+  }
+}
+
 func pressEnter() throws {
   let source = CGEventSource(stateID: .hidSystemState)
   let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true)
@@ -483,6 +502,8 @@ do {
             lastFocused = freshTarget
             try replaceAllWithAccessibilitySelectionAndClipboard(freshTarget, text: text)
           }
+        case .insertPaste(let text):
+          try pasteTextAtCursor(text)
         case .submit:
           try pressEnter()
         }

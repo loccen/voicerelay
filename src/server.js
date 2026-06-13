@@ -147,6 +147,13 @@ async function pasteWithMacInputWriter(text) {
   return sendWriterCommand(writer, `PASTE ${payload}`);
 }
 
+async function insertPasteWithMacInputWriter(text) {
+  await fs.access(macInputWriterPath);
+  const writer = ensureMacInputWriter();
+  const payload = Buffer.from(text, "utf8").toString("base64");
+  return sendWriterCommand(writer, `INSERT_PASTE ${payload}`);
+}
+
 async function submitWithMacInputWriter() {
   await fs.access(macInputWriterPath);
   const writer = ensureMacInputWriter();
@@ -178,6 +185,10 @@ async function replaceFocusedFieldForSubmit(text) {
     return;
   }
   await writeWithMacInputWriter(text);
+}
+
+async function insertIntoFocusedFieldForSubmit(text) {
+  await insertPasteWithMacInputWriter(text);
 }
 
 function ensureMacInputWriter() {
@@ -349,13 +360,18 @@ const server = http.createServer(async (req, res) => {
       const payload = JSON.parse(raw || "{}");
       const text = typeof payload.text === "string" ? payload.text : "";
       const revision = Number.isFinite(payload.revision) ? payload.revision : Date.now();
+      const inputMode = payload.mode === "send" ? "send" : "realtime";
 
       latestText = text;
       latestRevision = revision;
-      await replaceFocusedFieldForSubmit(text);
+      if (inputMode === "send") {
+        await insertIntoFocusedFieldForSubmit(text);
+      } else {
+        await replaceFocusedFieldForSubmit(text);
+      }
       await submitFocusedField();
-      console.log(`已发送 revision=${revision} chars=${text.length}`);
-      sendJson(res, 200, { ok: true, revision, length: text.length, submitted: true });
+      console.log(`已发送 revision=${revision} mode=${inputMode} chars=${text.length}`);
+      sendJson(res, 200, { ok: true, revision, length: text.length, mode: inputMode, submitted: true });
     } catch (error) {
       console.error("提交当前焦点失败:", error.stderr || error.message);
       sendJson(res, 500, { ok: false, error: error.message });

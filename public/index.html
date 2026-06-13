@@ -16,6 +16,7 @@
         --warn: #ffca59;
         --bad: #ff6b6b;
         --button: #2488ff;
+        --surface: rgba(244, 247, 245, 0.08);
       }
 
       * {
@@ -67,7 +68,7 @@
         overflow-y: hidden;
         padding: 16px 14px;
         border-radius: 12px;
-        background: rgba(244, 247, 245, 0.08);
+        background: var(--surface);
         color: var(--fg);
         caret-color: var(--ok);
         font: 20px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -113,6 +114,30 @@
         transform: translateY(1px);
       }
 
+      .modeControl {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        height: 44px;
+        padding: 4px;
+        border-radius: 12px;
+        background: var(--surface);
+      }
+
+      .modeButton {
+        min-width: 0;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        color: var(--muted);
+        font: 600 16px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .modeButton[aria-pressed="true"] {
+        background: rgba(244, 247, 245, 0.16);
+        color: var(--fg);
+      }
+
       .inputPanel {
         width: 100vw;
         height: 100dvh;
@@ -144,6 +169,11 @@
 
     <section class="inputPanel" id="inputPanel" hidden>
       <div class="inputStack">
+        <div class="modeControl" role="group" aria-label="输入模式">
+          <button class="modeButton" id="realtimeModeButton" type="button" aria-pressed="true">实时同步</button>
+          <button class="modeButton" id="sendModeButton" type="button" aria-pressed="false">发送模式</button>
+        </div>
+
         <textarea
           id="voiceText"
           autocomplete="off"
@@ -163,12 +193,15 @@
       const authPassword = document.querySelector("#authPassword");
       const sendButton = document.querySelector("#sendButton");
       const inputPanel = document.querySelector("#inputPanel");
+      const realtimeModeButton = document.querySelector("#realtimeModeButton");
+      const sendModeButton = document.querySelector("#sendModeButton");
 
       let revision = 0;
       let timer = 0;
       let sending = false;
       let dirtyWhileSending = false;
       let composing = false;
+      let inputMode = localStorage.getItem("voiceRelayInputMode") === "send" ? "send" : "realtime";
 
       function setState(state) {
         document.body.dataset.state = state;
@@ -177,6 +210,7 @@
       function showInput() {
         authForm.hidden = true;
         inputPanel.hidden = false;
+        updateModeControl();
         resizeTextarea();
         textarea.focus();
       }
@@ -193,11 +227,12 @@
         const verticalPadding =
           parseFloat(panelStyle.paddingTop) + parseFloat(panelStyle.paddingBottom);
         const buttonHeight = sendButton.offsetHeight || 56;
-        const gap = 12;
+        const modeHeight = realtimeModeButton.parentElement.offsetHeight || 44;
+        const gap = 24;
         const bottomReserve = 16;
         const maxHeight = Math.max(
           72,
-          window.innerHeight - verticalPadding - buttonHeight - gap - bottomReserve,
+          window.innerHeight - verticalPadding - buttonHeight - modeHeight - gap - bottomReserve,
         );
 
         textarea.style.setProperty("--text-max-height", `${maxHeight}px`);
@@ -276,6 +311,7 @@
             body: JSON.stringify({
               text: textarea.value,
               revision: ++revision,
+              mode: inputMode,
             }),
           });
 
@@ -294,14 +330,29 @@
           return false;
         } finally {
           sending = false;
-          if (dirtyWhileSending) schedulePost(80);
+          if (dirtyWhileSending && inputMode === "realtime") schedulePost(80);
         }
       }
 
       function schedulePost(delay = 180) {
+        if (inputMode !== "realtime") return;
         if (composing) return;
         window.clearTimeout(timer);
         timer = window.setTimeout(postText, delay);
+      }
+
+      function updateModeControl() {
+        const realtime = inputMode === "realtime";
+        realtimeModeButton.setAttribute("aria-pressed", realtime ? "true" : "false");
+        sendModeButton.setAttribute("aria-pressed", realtime ? "false" : "true");
+      }
+
+      function setInputMode(mode) {
+        inputMode = mode;
+        localStorage.setItem("voiceRelayInputMode", inputMode);
+        window.clearTimeout(timer);
+        updateModeControl();
+        textarea.focus();
       }
 
       textarea.addEventListener("compositionstart", () => {
@@ -316,6 +367,15 @@
       textarea.addEventListener("input", () => {
         resizeTextarea();
         schedulePost();
+      });
+
+      realtimeModeButton.addEventListener("click", () => {
+        setInputMode("realtime");
+        schedulePost(0);
+      });
+
+      sendModeButton.addEventListener("click", () => {
+        setInputMode("send");
       });
 
       sendButton.addEventListener("click", () => {
