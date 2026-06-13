@@ -138,6 +138,71 @@
         color: var(--fg);
       }
 
+      .historyPanel {
+        max-height: min(168px, 24dvh);
+        overflow-y: auto;
+        border-radius: 12px;
+        background: var(--surface);
+      }
+
+      .statsPanel {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        overflow: hidden;
+        border-radius: 12px;
+        background: var(--surface);
+      }
+
+      .statItem {
+        min-width: 0;
+        padding: 10px 12px;
+      }
+
+      .statLabel {
+        color: var(--muted);
+        font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .statValue {
+        margin-top: 6px;
+        color: var(--fg);
+        font: 700 17px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .historyTitle {
+        padding: 10px 12px 4px;
+        color: var(--muted);
+        font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .historyList {
+        display: grid;
+        gap: 1px;
+      }
+
+      .historyItem {
+        width: 100%;
+        min-height: 42px;
+        border: 0;
+        padding: 10px 12px;
+        background: transparent;
+        color: var(--fg);
+        font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+        text-align: left;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .historyItem:active {
+        background: rgba(244, 247, 245, 0.12);
+      }
+
       .inputPanel {
         width: 100vw;
         height: 100dvh;
@@ -184,6 +249,30 @@
         ></textarea>
 
         <button class="sendButton" id="sendButton" type="button">发送</button>
+
+        <section class="statsPanel" id="statsPanel">
+          <div class="statItem">
+            <div class="statLabel">本次字数</div>
+            <div class="statValue" id="currentChars">0</div>
+          </div>
+          <div class="statItem">
+            <div class="statLabel">本次耗时</div>
+            <div class="statValue" id="currentInputTime">0 秒</div>
+          </div>
+          <div class="statItem">
+            <div class="statLabel">累计字数</div>
+            <div class="statValue" id="sentChars">0</div>
+          </div>
+          <div class="statItem">
+            <div class="statLabel" id="savedTimeLabel">累计节省</div>
+            <div class="statValue" id="savedTime">0 秒</div>
+          </div>
+        </section>
+
+        <section class="historyPanel" id="historyPanel" aria-label="发送历史" hidden>
+          <div class="historyTitle">发送历史</div>
+          <div class="historyList" id="historyList"></div>
+        </section>
       </div>
     </section>
 
@@ -195,6 +284,19 @@
       const inputPanel = document.querySelector("#inputPanel");
       const realtimeModeButton = document.querySelector("#realtimeModeButton");
       const sendModeButton = document.querySelector("#sendModeButton");
+      const historyPanel = document.querySelector("#historyPanel");
+      const historyList = document.querySelector("#historyList");
+      const statsPanel = document.querySelector("#statsPanel");
+      const currentChars = document.querySelector("#currentChars");
+      const currentInputTime = document.querySelector("#currentInputTime");
+      const sentChars = document.querySelector("#sentChars");
+      const savedTimeLabel = document.querySelector("#savedTimeLabel");
+      const savedTime = document.querySelector("#savedTime");
+
+      const historyKey = "voiceRelaySendHistory";
+      const statsKey = "voiceRelaySendStats";
+      const maxHistoryItems = 12;
+      const defaultTypingCharsPerMinute = 60;
 
       let revision = 0;
       let timer = 0;
@@ -202,6 +304,10 @@
       let dirtyWhileSending = false;
       let composing = false;
       let inputMode = localStorage.getItem("voiceRelayInputMode") === "send" ? "send" : "realtime";
+      let draftTimer = 0;
+      let inputStartedAt = 0;
+      let inputEndedAt = 0;
+      let typingCharsPerMinute = defaultTypingCharsPerMinute;
 
       function setState(state) {
         document.body.dataset.state = state;
@@ -211,6 +317,7 @@
         authForm.hidden = true;
         inputPanel.hidden = false;
         updateModeControl();
+        loadServerData();
         resizeTextarea();
         textarea.focus();
       }
@@ -228,11 +335,20 @@
           parseFloat(panelStyle.paddingTop) + parseFloat(panelStyle.paddingBottom);
         const buttonHeight = sendButton.offsetHeight || 56;
         const modeHeight = realtimeModeButton.parentElement.offsetHeight || 44;
-        const gap = 24;
+        const statsHeight = statsPanel.offsetHeight || 58;
+        const historyHeight = historyPanel.hidden ? 0 : historyPanel.offsetHeight;
+        const gap = historyPanel.hidden ? 36 : 48;
         const bottomReserve = 16;
         const maxHeight = Math.max(
           72,
-          window.innerHeight - verticalPadding - buttonHeight - modeHeight - gap - bottomReserve,
+          window.innerHeight -
+            verticalPadding -
+            buttonHeight -
+            modeHeight -
+            statsHeight -
+            historyHeight -
+            gap -
+            bottomReserve,
         );
 
         textarea.style.setProperty("--text-max-height", `${maxHeight}px`);
@@ -282,12 +398,17 @@
       }
 
       async function submitText() {
+        if (sending) return;
         window.clearTimeout(timer);
+        window.clearTimeout(draftTimer);
         const textAtSubmit = textarea.value;
-        const submitted = await postToEndpoint("/api/submit");
-        if (!submitted || textarea.value !== textAtSubmit) return;
+        addHistoryItem(textAtSubmit);
+        const result = await postToEndpoint("/api/submit");
+        if (!result || textarea.value !== textAtSubmit) return;
 
+        applyRelayData(result);
         textarea.value = "";
+        resetInputTiming();
         resizeTextarea();
         textarea.focus();
       }
@@ -312,6 +433,7 @@
               text: textarea.value,
               revision: ++revision,
               mode: inputMode,
+              inputDurationMs: currentInputDurationMs(),
             }),
           });
 
@@ -324,7 +446,9 @@
           window.setTimeout(() => {
             if (document.body.dataset.state === "ok") setState("idle");
           }, 450);
-          return true;
+          const data = await response.json();
+          applyRelayData(data);
+          return data;
         } catch {
           setState("error");
           return false;
@@ -334,11 +458,32 @@
         }
       }
 
+      async function postDraft() {
+        try {
+          const response = await fetch("/api/draft", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              text: textarea.value,
+              inputDurationMs: currentInputDurationMs(),
+            }),
+          });
+          if (response.ok) applyRelayData(await response.json());
+          if (response.status === 401) showAuth();
+        } catch {}
+      }
+
       function schedulePost(delay = 180) {
         if (inputMode !== "realtime") return;
         if (composing) return;
         window.clearTimeout(timer);
         timer = window.setTimeout(postText, delay);
+      }
+
+      function scheduleDraft(delay = 600) {
+        if (inputMode !== "send") return;
+        window.clearTimeout(draftTimer);
+        draftTimer = window.setTimeout(postDraft, delay);
       }
 
       function updateModeControl() {
@@ -355,17 +500,172 @@
         textarea.focus();
       }
 
+      async function loadServerData() {
+        try {
+          const response = await fetch("/api/history", { cache: "no-store" });
+          if (!response.ok) {
+            if (response.status === 401) showAuth();
+            return;
+          }
+          applyRelayData(await response.json());
+        } catch {
+          renderStats();
+          renderHistory();
+        }
+      }
+
+      function applyRelayData(data) {
+        if (!data || data.ok === false) return;
+        if (Number.isFinite(data.typingCharsPerMinute)) {
+          typingCharsPerMinute = data.typingCharsPerMinute;
+        }
+        if (Array.isArray(data.history)) {
+          saveHistory(data.history);
+        }
+        if (data.stats) {
+          saveStats(data.stats);
+        }
+        renderStats(data.currentInput);
+        renderHistory();
+      }
+
+      function loadHistory() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(historyKey) || "[]");
+          return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function saveHistory(history) {
+        localStorage.setItem(historyKey, JSON.stringify(history.slice(0, maxHistoryItems)));
+      }
+
+      function historyPreview(text) {
+        return text.replace(/\s+/g, " ").trim() || "空白内容";
+      }
+
+      function renderHistory() {
+        const history = loadHistory();
+        historyPanel.hidden = history.length === 0;
+        historyList.replaceChildren();
+
+        for (const text of history) {
+          const item = document.createElement("button");
+          item.className = "historyItem";
+          item.type = "button";
+          item.textContent = historyPreview(text);
+          item.addEventListener("click", () => {
+            textarea.value = text;
+            resetInputTiming();
+            resizeTextarea();
+            renderStats();
+            textarea.focus();
+            schedulePost(0);
+            scheduleDraft(0);
+          });
+          historyList.append(item);
+        }
+
+        resizeTextarea();
+      }
+
+      function addHistoryItem(text) {
+        if (!text) return;
+        const history = loadHistory().filter((item) => item !== text);
+        history.unshift(text);
+        saveHistory(history);
+        renderHistory();
+      }
+
+      function loadStats() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(statsKey) || "{}");
+          return {
+            sentChars: Number.isFinite(parsed.sentChars) ? parsed.sentChars : 0,
+            actualInputMs: Number.isFinite(parsed.actualInputMs) ? parsed.actualInputMs : 0,
+            manualInputMs: Number.isFinite(parsed.manualInputMs) ? parsed.manualInputMs : 0,
+            savedMs: Number.isFinite(parsed.savedMs) ? parsed.savedMs : 0,
+          };
+        } catch {
+          return { sentChars: 0, actualInputMs: 0, manualInputMs: 0, savedMs: 0 };
+        }
+      }
+
+      function saveStats(stats) {
+        localStorage.setItem(statsKey, JSON.stringify(stats));
+      }
+
+      function formatDuration(ms) {
+        const seconds = Math.max(0, Math.round(ms / 1000));
+        if (seconds < 60) return `${seconds} 秒`;
+        const minutes = seconds / 60;
+        if (minutes < 60) return `${Math.round(minutes)} 分钟`;
+        const hours = minutes / 60;
+        return `${hours.toFixed(hours < 10 ? 1 : 0)} 小时`;
+      }
+
+      function renderStats(serverCurrentInput) {
+        const stats = loadStats();
+        const current = serverCurrentInput || currentInputMetrics();
+        currentChars.textContent = current.chars.toLocaleString("zh-CN");
+        currentInputTime.textContent = formatDuration(current.actualInputMs);
+        sentChars.textContent = stats.sentChars.toLocaleString("zh-CN");
+        savedTimeLabel.textContent = `累计节省(${typingCharsPerMinute}字/分)`;
+        savedTime.textContent = formatDuration(stats.savedMs);
+        resizeTextarea();
+      }
+
+      function currentInputDurationMs() {
+        if (!inputStartedAt || !inputEndedAt) return 0;
+        return Math.max(0, inputEndedAt - inputStartedAt);
+      }
+
+      function currentInputMetrics() {
+        const chars = textarea.value.length;
+        const actualInputMs = currentInputDurationMs();
+        const manualInputMs = typingCharsPerMinute > 0 ? (chars / typingCharsPerMinute) * 60_000 : 0;
+        return {
+          chars,
+          actualInputMs,
+          manualInputMs,
+          savedMs: Math.max(0, manualInputMs - actualInputMs),
+        };
+      }
+
+      function resetInputTiming() {
+        inputStartedAt = 0;
+        inputEndedAt = 0;
+      }
+
+      function updateInputTiming() {
+        const now = Date.now();
+        if (!textarea.value) {
+          resetInputTiming();
+          return;
+        }
+        if (!inputStartedAt) inputStartedAt = now;
+        inputEndedAt = now;
+      }
+
       textarea.addEventListener("compositionstart", () => {
         composing = true;
       });
 
       textarea.addEventListener("compositionend", () => {
         composing = false;
+        updateInputTiming();
+        renderStats();
+        scheduleDraft(0);
         schedulePost(60);
       });
 
       textarea.addEventListener("input", () => {
+        updateInputTiming();
         resizeTextarea();
+        renderStats();
+        scheduleDraft();
         schedulePost();
       });
 
@@ -394,6 +694,8 @@
       });
 
       window.addEventListener("pageshow", () => {
+        renderStats();
+        renderHistory();
         checkAuth();
       });
 

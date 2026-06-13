@@ -77,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var autoServiceItem = NSMenuItem()
   private var autoTunnelItem = NSMenuItem()
   private var statusItemText = NSMenuItem()
+  private var currentStatsItem = NSMenuItem()
+  private var historyStatsItem = NSMenuItem()
+  private var typingSpeedItem = NSMenuItem()
   private var serviceSwitch = BlueSwitch()
   private var tunnelSwitch = BlueSwitch()
   private var autoLaunchSwitch = BlueSwitch()
@@ -112,6 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func buildMenu() {
     statusItemText = NSMenuItem(title: "状态：未启动", action: nil, keyEquivalent: "")
     menu.addItem(statusItemText)
+    currentStatsItem = NSMenuItem(title: "本次：0 字，耗时 0 秒", action: nil, keyEquivalent: "")
+    menu.addItem(currentStatsItem)
+    historyStatsItem = NSMenuItem(title: "累计：0 字，省 0 秒", action: nil, keyEquivalent: "")
+    menu.addItem(historyStatsItem)
+    typingSpeedItem = NSMenuItem(title: "打字速度：60 字/分钟", action: nil, keyEquivalent: "")
+    menu.addItem(typingSpeedItem)
     menu.addItem(.separator())
 
     serviceItem = makeSwitchItem(title: "跨屏输入服务", switchControl: serviceSwitch, action: #selector(toggleService))
@@ -137,6 +146,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let clearSessionsItem = NSMenuItem(title: "清除手机登录态", action: #selector(clearSessions), keyEquivalent: "")
     clearSessionsItem.target = self
     menu.addItem(clearSessionsItem)
+
+    let typingTestItem = NSMenuItem(title: "打开打字速度测试", action: #selector(openTypingTest), keyEquivalent: "")
+    typingTestItem.target = self
+    menu.addItem(typingTestItem)
+
+    let typingSpeedSettingItem = NSMenuItem(title: "设置打字速度", action: #selector(setTypingSpeed), keyEquivalent: "")
+    typingSpeedSettingItem.target = self
+    menu.addItem(typingSpeedSettingItem)
 
     let accessibilityItem = NSMenuItem(title: "打开辅助功能权限设置", action: #selector(openAccessibilitySettings), keyEquivalent: "")
     accessibilityItem.target = self
@@ -262,6 +279,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       notify("已清除手机登录态")
     } catch {
       notify("清除失败：\(error.localizedDescription)")
+    }
+  }
+
+  @objc private func openTypingTest() {
+    NSWorkspace.shared.open(URL(string: "https://dazi.kukuw.com/")!)
+  }
+
+  @objc private func setTypingSpeed() {
+    let stats = readRelayStats()
+    let alert = NSAlert()
+    alert.messageText = "设置打字速度"
+    alert.informativeText = "单位：字/分钟。默认值是 60。"
+    alert.addButton(withTitle: "保存")
+    alert.addButton(withTitle: "取消")
+
+    let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+    input.stringValue = "\(Int(stats.typingCharsPerMinute.rounded()))"
+    alert.accessoryView = input
+
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    let value = Double(input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    guard value > 0 else {
+      notify("请输入大于 0 的字/分钟")
+      return
+    }
+
+    do {
+      try writeTypingSpeed(value)
+      notify("打字速度已更新")
+      refreshState()
+    } catch {
+      notify("保存失败：\(error.localizedDescription)")
     }
   }
 
@@ -391,8 +440,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let serviceText = serviceRunning ? "服务开" : "服务关"
     let tunnelText = tunnelRunning ? "隧道开" : "隧道关"
     statusItemText.title = "状态：\(serviceText)，\(tunnelText)"
+    let stats = readRelayStats()
+    currentStatsItem.title = "本次：\(formatCount(stats.currentChars)) 字，耗时 \(formatDuration(stats.currentInputMs))"
+    historyStatsItem.title = "累计：\(formatCount(stats.sentChars)) 字，省 \(formatDuration(stats.savedMs))"
+    typingSpeedItem.title = "打字速度：\(formatCount(stats.typingCharsPerMinute)) 字/分钟"
 
     statusItem.button?.contentTintColor = nil
+  }
+
+  private struct RelayStats {
+    let currentChars: Double
+    let currentInputMs: Double
+    let sentChars: Double
+    let savedMs: Double
+    let typingCharsPerMinute: Double
+  }
+
+  private func readRelayStats() -> RelayStats {
+    let url = URL(fileURLWithPath: "\(root)/.voicerelay-data.json")
+    guard let data = try? Data(contentsOf: url),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return RelayStats(currentChars: 0, currentInputMs: 0, sentChars: 0, savedMs: 0, typingCharsPerMinute: 60)
+    }
+
+    let current = object["currentInput"] as? [String: Any] ?? [:]
+    let stats = object["stats"] as? [String: Any] ?? [:]
+    return RelayStats(
+      currentChars: number(current["chars"]),
+      currentInputMs: number(current["actualInputMs"]),
+      sentChars: number(stats["sentChars"]),
+      savedMs: number(stats["savedMs"]),
+      typingCharsPerMinute: max(1, number(object["typingCharsPerMinute"], fallback: 60))
+    )
+  }
+
+  private func number(_ value: Any?, fallback: Double = 0) -> Double {
+    if let value = value as? Double { return value }
+    if let value = value as? Int { return Double(value) }
+    if let value = value as? NSNumber { return value.doubleValue }
+    return fallback
+  }
+
+  private func writeTypingSpeed(_ value: Double) throws {
+    let url = URL(fileURLWithPath: "\(root)/.voicerelay-data.json")
+    var object: [String: Any] = [:]
+    if let data = try? Data(contentsOf: url),
+       let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+      object = existing
+    }
+    object["typingCharsPerMinute"] = value
+    object["updatedAt"] = Date().timeIntervalSince1970 * 1000
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+    try data.write(to: url)
+  }
+
+  private func formatCount(_ value: Double) -> String {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.maximumFractionDigits = 0
+    return formatter.string(from: NSNumber(value: value)) ?? "\(Int(value))"
+  }
+
+  private func formatDuration(_ ms: Double) -> String {
+    let seconds = max(0, Int((ms / 1000).rounded()))
+    if seconds < 60 {
+      return "\(seconds) 秒"
+    }
+    let minutes = Double(seconds) / 60
+    if minutes < 60 {
+      return "\(Int(minutes.rounded())) 分钟"
+    }
+    let hours = minutes / 60
+    return hours < 10 ? String(format: "%.1f 小时", hours) : "\(Int(hours.rounded())) 小时"
   }
 
   private func cleanupExternalProcesses() {

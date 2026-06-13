@@ -18,7 +18,10 @@ const PUBLIC_URL =
   (process.env.PUBLIC_HOST ? `https://${process.env.PUBLIC_HOST}/` : `http://${HOST}:${PORT}/`);
 const SYNC_DEBOUNCE_MS = Number(process.env.SYNC_DEBOUNCE_MS || 180);
 const publicDir = path.join(__dirname, "..", "public");
+const dataPath = process.env.VOICE_RELAY_DATA_PATH || path.join(__dirname, "..", ".voicerelay-data.json");
 const macInputWriterPath = process.env.MAC_INPUT_WRITER_PATH || path.join(__dirname, "..", "bin", "mac-input-writer");
+const defaultTypingCharsPerMinute = Number(process.env.TYPING_CHARS_PER_MINUTE || 60);
+const maxHistoryItems = Number(process.env.MAX_HISTORY_ITEMS || 50);
 
 let latestText = "";
 let latestRevision = 0;
@@ -44,6 +47,113 @@ function sendJson(res, status, data) {
     "cache-control": "no-store",
   });
   res.end(body);
+}
+
+function emptyRelayData() {
+  return {
+    history: [],
+    stats: {
+      sendCount: 0,
+      sentChars: 0,
+      manualInputMs: 0,
+      actualInputMs: 0,
+      savedMs: 0,
+    },
+    currentInput: {
+      chars: 0,
+      actualInputMs: 0,
+      manualInputMs: 0,
+      savedMs: 0,
+      updatedAt: 0,
+    },
+    typingCharsPerMinute: defaultTypingCharsPerMinute,
+    updatedAt: 0,
+  };
+}
+
+function normalizeRelayData(data) {
+  const fallback = emptyRelayData();
+  const stats = data?.stats || {};
+  const current = data?.currentInput || {};
+  return {
+    history: Array.isArray(data?.history) ? data.history.filter((item) => typeof item === "string").slice(0, maxHistoryItems) : [],
+    stats: {
+      sendCount: Number.isFinite(stats.sendCount) ? stats.sendCount : 0,
+      sentChars: Number.isFinite(stats.sentChars) ? stats.sentChars : 0,
+      manualInputMs: Number.isFinite(stats.manualInputMs) ? stats.manualInputMs : 0,
+      actualInputMs: Number.isFinite(stats.actualInputMs) ? stats.actualInputMs : 0,
+      savedMs: Number.isFinite(stats.savedMs) ? stats.savedMs : 0,
+    },
+    currentInput: {
+      chars: Number.isFinite(current.chars) ? current.chars : 0,
+      actualInputMs: Number.isFinite(current.actualInputMs) ? current.actualInputMs : 0,
+      manualInputMs: Number.isFinite(current.manualInputMs) ? current.manualInputMs : 0,
+      savedMs: Number.isFinite(current.savedMs) ? current.savedMs : 0,
+      updatedAt: Number.isFinite(current.updatedAt) ? current.updatedAt : 0,
+    },
+    typingCharsPerMinute: Number.isFinite(data?.typingCharsPerMinute) && data.typingCharsPerMinute > 0
+      ? data.typingCharsPerMinute
+      : fallback.typingCharsPerMinute,
+    updatedAt: Number.isFinite(data?.updatedAt) ? data.updatedAt : 0,
+  };
+}
+
+async function readRelayData() {
+  try {
+    const raw = await fs.readFile(dataPath, "utf8");
+    return normalizeRelayData(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === "ENOENT") return emptyRelayData();
+    throw error;
+  }
+}
+
+async function writeRelayData(data) {
+  const normalized = normalizeRelayData({ ...data, updatedAt: Date.now() });
+  await fs.writeFile(dataPath, `${JSON.stringify(normalized, null, 2)}\n`);
+  return normalized;
+}
+
+function inputMetrics(text, inputDurationMs = 0, charsPerMinute = defaultTypingCharsPerMinute) {
+  const chars = text.length;
+  const actualInputMs = Math.max(0, Number(inputDurationMs) || 0);
+  const manualInputMs = charsPerMinute > 0 ? (chars / charsPerMinute) * 60_000 : 0;
+  return {
+    chars,
+    actualInputMs,
+    manualInputMs,
+    savedMs: Math.max(0, manualInputMs - actualInputMs),
+  };
+}
+
+function addHistory(data, text) {
+  if (!text) return data;
+  data.history = [text, ...data.history.filter((item) => item !== text)].slice(0, maxHistoryItems);
+  return data;
+}
+
+async function updateCurrentInput(text, inputDurationMs) {
+  const data = await readRelayData();
+  data.currentInput = { ...inputMetrics(text, inputDurationMs, data.typingCharsPerMinute), updatedAt: Date.now() };
+  return writeRelayData(data);
+}
+
+async function rememberSubmissionAttempt(text, inputDurationMs) {
+  const data = addHistory(await readRelayData(), text);
+  data.currentInput = { ...inputMetrics(text, inputDurationMs, data.typingCharsPerMinute), updatedAt: Date.now() };
+  return writeRelayData(data);
+}
+
+async function recordSuccessfulSubmission(text, inputDurationMs) {
+  const data = await readRelayData();
+  const metrics = inputMetrics(text, inputDurationMs, data.typingCharsPerMinute);
+  data.stats.sendCount += 1;
+  data.stats.sentChars += metrics.chars;
+  data.stats.actualInputMs += metrics.actualInputMs;
+  data.stats.manualInputMs += metrics.manualInputMs;
+  data.stats.savedMs = Math.max(0, data.stats.manualInputMs - data.stats.actualInputMs);
+  data.currentInput = { ...inputMetrics("", 0, data.typingCharsPerMinute), updatedAt: Date.now() };
+  return writeRelayData(data);
 }
 
 function shouldUseSecureCookie(req) {
@@ -316,12 +426,46 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/api/status") {
     sendJson(res, 200, {
       ok: true,
-      host: PUBLIC_HOST,
+      publicUrl: PUBLIC_URL,
       authenticated: await verifySession(req),
       latestRevision,
       latestLength: latestText.length,
       platform: os.platform(),
     });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/history") {
+    if (!(await verifySession(req))) {
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    try {
+      sendJson(res, 200, { ok: true, ...(await readRelayData()) });
+    } catch (error) {
+      console.error("读取统计失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/draft") {
+    if (!(await verifySession(req))) {
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    try {
+      const raw = await readBody(req);
+      const payload = JSON.parse(raw || "{}");
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const inputDurationMs = Number.isFinite(payload.inputDurationMs) ? payload.inputDurationMs : 0;
+      sendJson(res, 200, { ok: true, ...(await updateCurrentInput(text, inputDurationMs)) });
+    } catch (error) {
+      console.error("暂存本次输入统计失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
     return;
   }
 
@@ -336,9 +480,11 @@ const server = http.createServer(async (req, res) => {
       const payload = JSON.parse(raw || "{}");
       const text = typeof payload.text === "string" ? payload.text : "";
       const revision = Number.isFinite(payload.revision) ? payload.revision : Date.now();
+      const inputDurationMs = Number.isFinite(payload.inputDurationMs) ? payload.inputDurationMs : 0;
 
       latestText = text;
       latestRevision = revision;
+      await updateCurrentInput(text, inputDurationMs);
       await writeIntoFocusedField(text);
       console.log(`已同步 revision=${revision} chars=${text.length}`);
       sendJson(res, 200, { ok: true, revision, length: text.length });
@@ -361,17 +507,20 @@ const server = http.createServer(async (req, res) => {
       const text = typeof payload.text === "string" ? payload.text : "";
       const revision = Number.isFinite(payload.revision) ? payload.revision : Date.now();
       const inputMode = payload.mode === "send" ? "send" : "realtime";
+      const inputDurationMs = Number.isFinite(payload.inputDurationMs) ? payload.inputDurationMs : 0;
 
       latestText = text;
       latestRevision = revision;
+      await rememberSubmissionAttempt(text, inputDurationMs);
       if (inputMode === "send") {
         await insertIntoFocusedFieldForSubmit(text);
       } else {
         await replaceFocusedFieldForSubmit(text);
       }
       await submitFocusedField();
+      const relayData = await recordSuccessfulSubmission(text, inputDurationMs);
       console.log(`已发送 revision=${revision} mode=${inputMode} chars=${text.length}`);
-      sendJson(res, 200, { ok: true, revision, length: text.length, mode: inputMode, submitted: true });
+      sendJson(res, 200, { ok: true, revision, length: text.length, mode: inputMode, submitted: true, ...relayData });
     } catch (error) {
       console.error("提交当前焦点失败:", error.stderr || error.message);
       sendJson(res, 500, { ok: false, error: error.message });
