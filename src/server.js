@@ -156,6 +156,19 @@ async function recordSuccessfulSubmission(text, inputDurationMs) {
   return writeRelayData(data);
 }
 
+async function clearHistory() {
+  const data = await readRelayData();
+  data.history = [];
+  return writeRelayData(data);
+}
+
+async function resetStats() {
+  const data = await readRelayData();
+  data.stats = emptyRelayData().stats;
+  data.currentInput = { ...inputMetrics("", 0, data.typingCharsPerMinute), updatedAt: Date.now() };
+  return writeRelayData(data);
+}
+
 function shouldUseSecureCookie(req) {
   const host = req.headers.host || "";
   return !host.startsWith("127.0.0.1") && !host.startsWith("localhost");
@@ -464,6 +477,36 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true, ...(await updateCurrentInput(text, inputDurationMs)) });
     } catch (error) {
       console.error("暂存本次输入统计失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/history/clear") {
+    if (!(await verifySession(req))) {
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    try {
+      sendJson(res, 200, { ok: true, ...(await clearHistory()) });
+    } catch (error) {
+      console.error("清空发送历史失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/stats/reset") {
+    if (!(await verifySession(req))) {
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    try {
+      sendJson(res, 200, { ok: true, ...(await resetStats()) });
+    } catch (error) {
+      console.error("重置统计失败:", error.message);
       sendJson(res, 500, { ok: false, error: error.message });
     }
     return;

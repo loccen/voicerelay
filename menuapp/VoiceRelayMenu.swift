@@ -155,6 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     typingSpeedSettingItem.target = self
     menu.addItem(typingSpeedSettingItem)
 
+    let clearHistoryItem = NSMenuItem(title: "清空发送历史", action: #selector(clearHistory), keyEquivalent: "")
+    clearHistoryItem.target = self
+    menu.addItem(clearHistoryItem)
+
+    let resetStatsItem = NSMenuItem(title: "重置统计", action: #selector(resetStats), keyEquivalent: "")
+    resetStatsItem.target = self
+    menu.addItem(resetStatsItem)
+
     let accessibilityItem = NSMenuItem(title: "打开辅助功能权限设置", action: #selector(openAccessibilitySettings), keyEquivalent: "")
     accessibilityItem.target = self
     menu.addItem(accessibilityItem)
@@ -314,6 +322,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+  @objc private func clearHistory() {
+    do {
+      try writeHistory([])
+      notify("发送历史已清空")
+      refreshState()
+    } catch {
+      notify("清空失败：\(error.localizedDescription)")
+    }
+  }
+
+  @objc private func resetStats() {
+    do {
+      try writeStatsReset()
+      notify("统计已重置")
+      refreshState()
+    } catch {
+      notify("重置失败：\(error.localizedDescription)")
+    }
+  }
+
   @objc private func openAccessibilitySettings() {
     let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
     NSWorkspace.shared.open(url)
@@ -442,7 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusItemText.title = "状态：\(serviceText)，\(tunnelText)"
     let stats = readRelayStats()
     currentStatsItem.title = "本次：\(formatCount(stats.currentChars)) 字，耗时 \(formatDuration(stats.currentInputMs))"
-    historyStatsItem.title = "累计：\(formatCount(stats.sentChars)) 字，省 \(formatDuration(stats.savedMs))"
+    historyStatsItem.title = "累计：\(formatCount(stats.sentChars)) 字，耗时 \(formatDuration(stats.totalInputMs))，省 \(formatDuration(stats.savedMs))"
     typingSpeedItem.title = "打字速度：\(formatCount(stats.typingCharsPerMinute)) 字/分钟"
 
     statusItem.button?.contentTintColor = nil
@@ -452,6 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let currentChars: Double
     let currentInputMs: Double
     let sentChars: Double
+    let totalInputMs: Double
     let savedMs: Double
     let typingCharsPerMinute: Double
   }
@@ -460,7 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let url = URL(fileURLWithPath: "\(root)/.voicerelay-data.json")
     guard let data = try? Data(contentsOf: url),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-      return RelayStats(currentChars: 0, currentInputMs: 0, sentChars: 0, savedMs: 0, typingCharsPerMinute: 60)
+      return RelayStats(currentChars: 0, currentInputMs: 0, sentChars: 0, totalInputMs: 0, savedMs: 0, typingCharsPerMinute: 60)
     }
 
     let current = object["currentInput"] as? [String: Any] ?? [:]
@@ -469,6 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       currentChars: number(current["chars"]),
       currentInputMs: number(current["actualInputMs"]),
       sentChars: number(stats["sentChars"]),
+      totalInputMs: number(stats["actualInputMs"]),
       savedMs: number(stats["savedMs"]),
       typingCharsPerMinute: max(1, number(object["typingCharsPerMinute"], fallback: 60))
     )
@@ -482,13 +512,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func writeTypingSpeed(_ value: Double) throws {
+    try updateRelayData { object in
+      object["typingCharsPerMinute"] = value
+    }
+  }
+
+  private func writeHistory(_ history: [String]) throws {
+    try updateRelayData { object in
+      object["history"] = history
+    }
+  }
+
+  private func writeStatsReset() throws {
+    try updateRelayData { object in
+      object["stats"] = [
+        "sendCount": 0,
+        "sentChars": 0,
+        "manualInputMs": 0,
+        "actualInputMs": 0,
+        "savedMs": 0,
+      ]
+      object["currentInput"] = [
+        "chars": 0,
+        "actualInputMs": 0,
+        "manualInputMs": 0,
+        "savedMs": 0,
+        "updatedAt": Date().timeIntervalSince1970 * 1000,
+      ]
+    }
+  }
+
+  private func updateRelayData(_ mutate: (inout [String: Any]) -> Void) throws {
     let url = URL(fileURLWithPath: "\(root)/.voicerelay-data.json")
     var object: [String: Any] = [:]
     if let data = try? Data(contentsOf: url),
        let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
       object = existing
     }
-    object["typingCharsPerMinute"] = value
+    mutate(&object)
     object["updatedAt"] = Date().timeIntervalSince1970 * 1000
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: url)

@@ -174,9 +174,28 @@
       }
 
       .historyTitle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
         padding: 10px 12px 4px;
         color: var(--muted);
         font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .smallActionButton {
+        border: 0;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: var(--surface);
+        color: var(--muted);
+        font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .actionRow {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
       }
 
       .historyList {
@@ -264,13 +283,24 @@
             <div class="statValue" id="sentChars">0</div>
           </div>
           <div class="statItem">
+            <div class="statLabel">累计耗时</div>
+            <div class="statValue" id="totalInputTime">0 秒</div>
+          </div>
+          <div class="statItem">
             <div class="statLabel" id="savedTimeLabel">累计节省</div>
             <div class="statValue" id="savedTime">0 秒</div>
           </div>
         </section>
 
+        <div class="actionRow">
+          <button class="smallActionButton" id="resetStatsButton" type="button">重置统计</button>
+          <button class="smallActionButton" id="clearHistoryButton" type="button">清空历史</button>
+        </div>
+
         <section class="historyPanel" id="historyPanel" aria-label="发送历史" hidden>
-          <div class="historyTitle">发送历史</div>
+          <div class="historyTitle">
+            <span>发送历史</span>
+          </div>
           <div class="historyList" id="historyList"></div>
         </section>
       </div>
@@ -287,11 +317,15 @@
       const historyPanel = document.querySelector("#historyPanel");
       const historyList = document.querySelector("#historyList");
       const statsPanel = document.querySelector("#statsPanel");
+      const actionRow = document.querySelector(".actionRow");
       const currentChars = document.querySelector("#currentChars");
       const currentInputTime = document.querySelector("#currentInputTime");
       const sentChars = document.querySelector("#sentChars");
+      const totalInputTime = document.querySelector("#totalInputTime");
       const savedTimeLabel = document.querySelector("#savedTimeLabel");
       const savedTime = document.querySelector("#savedTime");
+      const clearHistoryButton = document.querySelector("#clearHistoryButton");
+      const resetStatsButton = document.querySelector("#resetStatsButton");
 
       const historyKey = "voiceRelaySendHistory";
       const statsKey = "voiceRelaySendStats";
@@ -337,8 +371,9 @@
         const buttonHeight = sendButton.offsetHeight || 56;
         const modeHeight = realtimeModeButton.parentElement.offsetHeight || 44;
         const statsHeight = statsPanel.offsetHeight || 58;
+        const actionHeight = actionRow.offsetHeight || 38;
         const historyHeight = historyPanel.hidden ? 0 : historyPanel.offsetHeight;
-        const gap = historyPanel.hidden ? 36 : 48;
+        const gap = historyPanel.hidden ? 48 : 60;
         const bottomReserve = 16;
         const maxHeight = Math.max(
           72,
@@ -347,6 +382,7 @@
             buttonHeight -
             modeHeight -
             statsHeight -
+            actionHeight -
             historyHeight -
             gap -
             bottomReserve,
@@ -584,13 +620,14 @@
         try {
           const parsed = JSON.parse(localStorage.getItem(statsKey) || "{}");
           return {
+            sendCount: Number.isFinite(parsed.sendCount) ? parsed.sendCount : 0,
             sentChars: Number.isFinite(parsed.sentChars) ? parsed.sentChars : 0,
             actualInputMs: Number.isFinite(parsed.actualInputMs) ? parsed.actualInputMs : 0,
             manualInputMs: Number.isFinite(parsed.manualInputMs) ? parsed.manualInputMs : 0,
             savedMs: Number.isFinite(parsed.savedMs) ? parsed.savedMs : 0,
           };
         } catch {
-          return { sentChars: 0, actualInputMs: 0, manualInputMs: 0, savedMs: 0 };
+          return { sendCount: 0, sentChars: 0, actualInputMs: 0, manualInputMs: 0, savedMs: 0 };
         }
       }
 
@@ -613,14 +650,14 @@
         currentChars.textContent = current.chars.toLocaleString("zh-CN");
         currentInputTime.textContent = formatDuration(current.actualInputMs);
         sentChars.textContent = stats.sentChars.toLocaleString("zh-CN");
+        totalInputTime.textContent = formatDuration(stats.actualInputMs);
         savedTimeLabel.textContent = `累计节省(${typingCharsPerMinute}字/分)`;
         savedTime.textContent = formatDuration(stats.savedMs);
         resizeTextarea();
       }
 
       function currentInputDurationMs() {
-        if (!lastInputAt) return accumulatedInputMs;
-        return accumulatedInputMs + Math.min(Date.now() - lastInputAt, inputIdleStopMs);
+        return accumulatedInputMs;
       }
 
       function currentInputMetrics() {
@@ -650,6 +687,31 @@
           accumulatedInputMs += Math.min(now - lastInputAt, inputIdleStopMs);
         }
         lastInputAt = now;
+      }
+
+      async function clearHistory() {
+        saveHistory([]);
+        renderHistory();
+        try {
+          const response = await fetch("/api/history/clear", { method: "POST" });
+          if (response.ok) applyRelayData(await response.json());
+          if (response.status === 401) showAuth();
+        } catch {
+          setState("error");
+        }
+      }
+
+      async function resetStats() {
+        saveStats({ sendCount: 0, sentChars: 0, actualInputMs: 0, manualInputMs: 0, savedMs: 0 });
+        resetInputTiming();
+        renderStats();
+        try {
+          const response = await fetch("/api/stats/reset", { method: "POST" });
+          if (response.ok) applyRelayData(await response.json());
+          if (response.status === 401) showAuth();
+        } catch {
+          setState("error");
+        }
       }
 
       textarea.addEventListener("compositionstart", () => {
@@ -683,6 +745,14 @@
 
       sendButton.addEventListener("click", () => {
         submitText();
+      });
+
+      clearHistoryButton.addEventListener("click", () => {
+        clearHistory();
+      });
+
+      resetStatsButton.addEventListener("click", () => {
+        resetStats();
       });
 
       authForm.addEventListener("submit", (event) => {
