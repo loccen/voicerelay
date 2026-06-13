@@ -541,7 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     mutate(&object)
     object["updatedAt"] = Date().timeIntervalSince1970 * 1000
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-    try data.write(to: url)
+    try data.write(to: url, options: [.atomic])
   }
 
   private func formatCount(_ value: Double) -> String {

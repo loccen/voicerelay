@@ -1,6 +1,7 @@
 .DS_Store
 .voicerelay-auth.json
 .voicerelay-data.json
+.voicerelay-data.json.*.bak
 .voicerelay.log
 .voicerelay.err.log
 .voicerelay-menu.log

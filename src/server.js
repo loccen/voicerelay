@@ -110,7 +110,10 @@ async function readRelayData() {
 
 async function writeRelayData(data) {
   const normalized = normalizeRelayData({ ...data, updatedAt: Date.now() });
-  await fs.writeFile(dataPath, `${JSON.stringify(normalized, null, 2)}\n`);
+  const tempPath = `${dataPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+  await fs.rename(tempPath, dataPath);
+  await fs.chmod(dataPath, 0o600);
   return normalized;
 }
 
