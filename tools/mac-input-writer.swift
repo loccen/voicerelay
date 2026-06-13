@@ -345,19 +345,28 @@ func restoreClipboard(_ previous: [NSPasteboard.PasteboardType: Data]) {
   }
 }
 
-func paste() throws {
-  let source = CGEventSource(stateID: .hidSystemState)
-  let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
-  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
-
-  guard let keyDown, let keyUp else {
+func postKey(_ source: CGEventSource?, key: CGKeyCode, keyDown: Bool, flags: CGEventFlags = []) throws {
+  guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: keyDown) else {
     throw WriterError.pasteFailed
   }
+  event.flags = flags
+  event.post(tap: .cghidEventTap)
+}
 
-  keyDown.flags = .maskCommand
-  keyUp.flags = .maskCommand
-  keyDown.post(tap: .cghidEventTap)
-  keyUp.post(tap: .cghidEventTap)
+func releaseModifierKeys(_ source: CGEventSource?) throws {
+  for key in [CGKeyCode(55), CGKeyCode(54), CGKeyCode(56), CGKeyCode(60), CGKeyCode(58), CGKeyCode(61), CGKeyCode(59), CGKeyCode(62)] {
+    try postKey(source, key: key, keyDown: false)
+  }
+}
+
+func paste() throws {
+  let source = CGEventSource(stateID: .hidSystemState)
+  try releaseModifierKeys(source)
+  try postKey(source, key: 55, keyDown: true, flags: .maskCommand)
+  try postKey(source, key: 9, keyDown: true, flags: .maskCommand)
+  try postKey(source, key: 9, keyDown: false, flags: .maskCommand)
+  try postKey(source, key: 55, keyDown: false)
+  try releaseModifierKeys(source)
 }
 
 func replaceAllWithAccessibilitySelectionAndClipboard(_ element: AXUIElement, text: String) throws {
@@ -388,15 +397,10 @@ func pasteTextAtCursor(_ text: String) throws {
 
 func pressEnter() throws {
   let source = CGEventSource(stateID: .hidSystemState)
-  let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true)
-  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
-
-  guard let keyDown, let keyUp else {
-    throw WriterError.pasteFailed
-  }
-
-  keyDown.post(tap: .cghidEventTap)
-  keyUp.post(tap: .cghidEventTap)
+  try releaseModifierKeys(source)
+  try postKey(source, key: 36, keyDown: true)
+  try postKey(source, key: 36, keyDown: false)
+  try releaseModifierKeys(source)
 }
 
 func findMenuItem(in element: AXUIElement, titles: Set<String>, maxDepth: Int = 8) -> AXUIElement? {
