@@ -165,12 +165,22 @@
       .statIcon {
         width: 22px;
         height: 22px;
+        flex: 0 0 22px;
         display: grid;
         place-items: center;
         border-radius: 6px;
         background: rgba(244, 247, 245, 0.1);
         color: var(--muted);
-        font: 700 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .statIcon svg {
+        width: 15px;
+        height: 15px;
+        stroke: currentColor;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
       }
 
       .statText {
@@ -283,35 +293,66 @@
       <div class="inputStack">
         <section class="statsPanel" id="statsPanel">
           <div class="statItem">
-            <span class="statIcon">字</span>
+            <span class="statIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M5 4h14" />
+                <path d="M7 9h10" />
+                <path d="M8 14h8" />
+                <path d="M10 20h4" />
+                <path d="M12 4v16" />
+              </svg>
+            </span>
             <span class="statText">
               <span class="statValue" id="currentChars">0</span>
               <span class="statLabel">本次</span>
             </span>
           </div>
           <div class="statItem">
-            <span class="statIcon">时</span>
+            <span class="statIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="8" />
+                <path d="M12 7v5l3 2" />
+              </svg>
+            </span>
             <span class="statText">
               <span class="statValue" id="currentInputTime">0 秒</span>
               <span class="statLabel">本次</span>
             </span>
           </div>
           <div class="statItem">
-            <span class="statIcon">总</span>
+            <span class="statIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M5 19V9" />
+                <path d="M12 19V5" />
+                <path d="M19 19v-7" />
+                <path d="M4 19h16" />
+              </svg>
+            </span>
             <span class="statText">
               <span class="statValue" id="sentChars">0</span>
               <span class="statLabel">累计字数</span>
             </span>
           </div>
           <div class="statItem">
-            <span class="statIcon">耗</span>
+            <span class="statIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M7 4h10" />
+                <path d="M7 20h10" />
+                <path d="M8 4c0 5 8 5 8 8s-8 3-8 8" />
+                <path d="M16 4c0 5-8 5-8 8s8 3 8 8" />
+              </svg>
+            </span>
             <span class="statText">
               <span class="statValue" id="totalInputTime">0 秒</span>
               <span class="statLabel">累计耗时</span>
             </span>
           </div>
           <div class="statItem">
-            <span class="statIcon">省</span>
+            <span class="statIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M13 3 5 14h6l-1 7 8-11h-6l1-7Z" />
+              </svg>
+            </span>
             <span class="statText">
               <span class="statValue" id="savedTime">0 秒</span>
               <span class="statLabel" id="savedTimeLabel">节省</span>
