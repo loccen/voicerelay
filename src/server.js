@@ -1,4 +1,5 @@
 const { execFile, spawn } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const os = require("node:os");
@@ -28,6 +29,7 @@ let latestRevision = 0;
 let writerProcess = null;
 let writerStdoutBuffer = "";
 let writerPending = [];
+let dataMutationQueue = Promise.resolve();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -104,17 +106,74 @@ async function readRelayData() {
     return normalizeRelayData(JSON.parse(raw));
   } catch (error) {
     if (error.code === "ENOENT") return emptyRelayData();
+    if (error instanceof SyntaxError) return recoverRelayData(error);
     throw error;
   }
 }
 
-async function writeRelayData(data) {
+async function recoverRelayData(parseError) {
+  const raw = await fs.readFile(dataPath, "utf8");
+  const end = findFirstJsonObjectEnd(raw);
+  if (end === -1) throw parseError;
+
+  const suffix = raw.slice(end).trim();
+  if (!suffix) throw parseError;
+
+  const recovered = normalizeRelayData(JSON.parse(raw.slice(0, end)));
+  await writeRelayDataFile(recovered);
+  console.error(`统计数据文件尾部残留已自动修复: ${parseError.message}`);
+  return recovered;
+}
+
+function findFirstJsonObjectEnd(raw) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+
+  return -1;
+}
+
+async function writeRelayDataFile(data) {
   const normalized = normalizeRelayData({ ...data, updatedAt: Date.now() });
-  const tempPath = `${dataPath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = `${dataPath}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
   await fs.rename(tempPath, dataPath);
   await fs.chmod(dataPath, 0o600);
   return normalized;
+}
+
+async function mutateRelayData(mutator) {
+  const task = dataMutationQueue.then(async () => {
+    const data = await readRelayData();
+    const nextData = await mutator(data);
+    return writeRelayDataFile(nextData || data);
+  });
+
+  dataMutationQueue = task.catch(() => {});
+  return task;
 }
 
 function inputMetrics(text, inputDurationMs = 0, charsPerMinute = defaultTypingCharsPerMinute) {
@@ -136,40 +195,46 @@ function addHistory(data, text) {
 }
 
 async function updateCurrentInput(text, inputDurationMs) {
-  const data = await readRelayData();
-  data.currentInput = { ...inputMetrics(text, inputDurationMs, data.typingCharsPerMinute), updatedAt: Date.now() };
-  return writeRelayData(data);
+  return mutateRelayData((data) => {
+    data.currentInput = { ...inputMetrics(text, inputDurationMs, data.typingCharsPerMinute), updatedAt: Date.now() };
+    return data;
+  });
 }
 
 async function rememberSubmissionAttempt(text, inputDurationMs) {
-  const data = addHistory(await readRelayData(), text);
-  data.currentInput = { ...inputMetrics(text, inputDurationMs, data.typingCharsPerMinute), updatedAt: Date.now() };
-  return writeRelayData(data);
+  return mutateRelayData((data) => {
+    addHistory(data, text);
+    data.currentInput = { ...inputMetrics(text, inputDurationMs, data.typingCharsPerMinute), updatedAt: Date.now() };
+    return data;
+  });
 }
 
 async function recordSuccessfulSubmission(text, inputDurationMs) {
-  const data = await readRelayData();
-  const metrics = inputMetrics(text, inputDurationMs, data.typingCharsPerMinute);
-  data.stats.sendCount += 1;
-  data.stats.sentChars += metrics.chars;
-  data.stats.actualInputMs += metrics.actualInputMs;
-  data.stats.manualInputMs += metrics.manualInputMs;
-  data.stats.savedMs = Math.max(0, data.stats.manualInputMs - data.stats.actualInputMs);
-  data.currentInput = { ...inputMetrics("", 0, data.typingCharsPerMinute), updatedAt: Date.now() };
-  return writeRelayData(data);
+  return mutateRelayData((data) => {
+    const metrics = inputMetrics(text, inputDurationMs, data.typingCharsPerMinute);
+    data.stats.sendCount += 1;
+    data.stats.sentChars += metrics.chars;
+    data.stats.actualInputMs += metrics.actualInputMs;
+    data.stats.manualInputMs += metrics.manualInputMs;
+    data.stats.savedMs = Math.max(0, data.stats.manualInputMs - data.stats.actualInputMs);
+    data.currentInput = { ...inputMetrics("", 0, data.typingCharsPerMinute), updatedAt: Date.now() };
+    return data;
+  });
 }
 
 async function clearHistory() {
-  const data = await readRelayData();
-  data.history = [];
-  return writeRelayData(data);
+  return mutateRelayData((data) => {
+    data.history = [];
+    return data;
+  });
 }
 
 async function resetStats() {
-  const data = await readRelayData();
-  data.stats = emptyRelayData().stats;
-  data.currentInput = { ...inputMetrics("", 0, data.typingCharsPerMinute), updatedAt: Date.now() };
-  return writeRelayData(data);
+  return mutateRelayData((data) => {
+    data.stats = emptyRelayData().stats;
+    data.currentInput = { ...inputMetrics("", 0, data.typingCharsPerMinute), updatedAt: Date.now() };
+    return data;
+  });
 }
 
 function shouldUseSecureCookie(req) {
